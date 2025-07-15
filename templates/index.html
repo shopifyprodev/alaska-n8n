@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Text Extractor</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .input-container {
+            margin-bottom: 30px;
+        }
+        input[type="text"] {
+            width: 70%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+            margin-right: 10px;
+        }
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #007bff;
+        }
+        button {
+            padding: 12px 24px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        .result {
+            margin-top: 30px;
+        }
+        .result h2 {
+            color: #333;
+            margin-bottom: 15px;
+        }
+        #result-text {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 5px;
+            padding: 15px;
+            white-space: pre-wrap;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            max-height: 400px;
+            overflow-y: auto;
+            min-height: 100px;
+        }
+        .loading {
+            color: #007bff;
+            font-style: italic;
+        }
+        .error {
+            color: #dc3545;
+        }
+        .success {
+            color: #28a745;
+        }
+        .examples {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #e9ecef;
+            border-radius: 5px;
+        }
+        .examples h3 {
+            margin-top: 0;
+            color: #495057;
+        }
+        .examples ul {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+        .examples li {
+            margin: 5px 0;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📄 PDF Text Extractor</h1>
+        
+        <div class="input-container">
+            <input type="text" id="pdf-url" placeholder="Enter PDF URL or Google Drive link">
+            <button id="submit-btn">Extract Text</button>
+        </div>
+
+        <div class="result">
+            <h2>Extracted Text</h2>
+            <div id="result-text">Enter a PDF URL above and click "Extract Text" to get started.</div>
+        </div>
+
+        <div class="examples">
+            <h3>📋 Examples:</h3>
+            <ul>
+                <li><strong>Google Drive:</strong> https://drive.google.com/file/d/YOUR_FILE_ID/view</li>
+                <li><strong>Local file:</strong> /path/to/your/document.pdf</li>
+                <li><strong>Web URL:</strong> https://example.com/document.pdf</li>
+            </ul>
+            <p><small>💡 The tool supports both text-based PDFs and image-based PDFs using OCR technology.</small></p>
+        </div>
+    </div>
+
+    <script>    
+        const submitBtn = document.getElementById('submit-btn');
+        const pdfUrlInput = document.getElementById('pdf-url');
+        const resultText = document.getElementById('result-text');
+
+        submitBtn.addEventListener('click', async () => {
+            const pdfUrl = pdfUrlInput.value.trim();
+            
+            if (!pdfUrl) {
+                resultText.innerHTML = '<span class="error">Please enter a PDF URL.</span>';
+                return;
+            }
+
+            // Show loading state
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Extracting...';
+            resultText.innerHTML = '<span class="loading">Processing PDF... This may take a few moments.</span>';
+
+            try {
+                const response = await fetch(`/extract-text?pdf_url=${encodeURIComponent(pdfUrl)}`);
+                const data = await response.json();
+                
+                if (response.ok) {
+                    resultText.innerHTML = `<span class="success">✅ ${data.message}</span>\n\n${data.text}`;
+                } else {
+                    resultText.innerHTML = `<span class="error">❌ Error: ${data.error}</span>`;
+                }
+            } catch (error) {
+                resultText.innerHTML = `<span class="error">❌ Network Error: ${error.message}</span>`;
+            } finally {
+                // Reset button state
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Extract Text';
+            }
+        });
+
+        // Allow Enter key to submit
+        pdfUrlInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                submitBtn.click();
+            }
+        });
+    </script>
+</body>
+</html>
