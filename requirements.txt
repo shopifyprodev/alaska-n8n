@@ -5,3 +5,4 @@ pypdf==3.17.4
 requests==2.31.0
 flask==2.3.3
 gunicorn==21.2.0
+easyocr==1.7.0

@@ -43,16 +43,34 @@ try:
     try:
         pytesseract.get_tesseract_version()
         OCR_AVAILABLE = True
+        OCR_TYPE = "tesseract"
         print("OCR (Tesseract) is available")
     except Exception as e:
         print(f"Warning: Tesseract not found on system: {e}")
-        print("OCR will be disabled. Install tesseract-ocr package on your system.")
         OCR_AVAILABLE = False
+        OCR_TYPE = None
         
 except ImportError as e:
-    print(f"Warning: OCR dependencies not available: {e}")
-    print("Install with: pip install pytesseract pillow PyMuPDF")
+    print(f"Warning: Tesseract dependencies not available: {e}")
     OCR_AVAILABLE = False
+    OCR_TYPE = None
+
+# Try EasyOCR as fallback
+try:
+    import easyocr
+    EASYOCR_AVAILABLE = True
+    print("EasyOCR is available as fallback")
+except ImportError as e:
+    print(f"Warning: EasyOCR not available: {e}")
+    EASYOCR_AVAILABLE = False
+
+# Set final OCR availability
+if not OCR_AVAILABLE and EASYOCR_AVAILABLE:
+    OCR_AVAILABLE = True
+    OCR_TYPE = "easyocr"
+    print("Using EasyOCR for text extraction")
+elif not OCR_AVAILABLE:
+    print("No OCR available. Install tesseract-ocr or easyocr package.")
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -189,23 +207,35 @@ def extract_text_from_image(image_data):
         # Convert bytes to PIL Image
         image = Image.open(io.BytesIO(image_data))
         
-        # Configure OCR for better text extraction
-        # Try different PSM modes for better results
-        psm_modes = [6, 8, 3]  # 6=uniform block, 8=word, 3=auto
-        best_text = ""
-        
-        for psm in psm_modes:
+        if OCR_TYPE == "tesseract":
+            # Use Tesseract OCR
+            psm_modes = [6, 8, 3]  # 6=uniform block, 8=word, 3=auto
+            best_text = ""
+            
+            for psm in psm_modes:
+                try:
+                    custom_config = f'--oem 3 --psm {psm}'
+                    text = pytesseract.image_to_string(image, config=custom_config)
+                    
+                    if text.strip() and len(text.strip()) > len(best_text):
+                        best_text = text.strip()
+                except Exception as e:
+                    print(f"Tesseract OCR failed with PSM {psm}: {e}")
+                    continue
+            
+            text = best_text
+            
+        elif OCR_TYPE == "easyocr":
+            # Use EasyOCR
             try:
-                custom_config = f'--oem 3 --psm {psm}'
-                text = pytesseract.image_to_string(image, config=custom_config)
-                
-                if text.strip() and len(text.strip()) > len(best_text):
-                    best_text = text.strip()
+                reader = easyocr.Reader(['en'])
+                results = reader.readtext(image)
+                text = ' '.join([result[1] for result in results])
             except Exception as e:
-                print(f"OCR failed with PSM {psm}: {e}")
-                continue
-        
-        text = best_text
+                print(f"EasyOCR failed: {e}")
+                text = ""
+        else:
+            text = ""
         
         # Clean up the extracted text
         if text:
@@ -450,6 +480,8 @@ def health():
     return jsonify({
         'status': 'healthy',
         'ocr_available': OCR_AVAILABLE,
+        'ocr_type': OCR_TYPE,
+        'easyocr_available': EASYOCR_AVAILABLE,
         'flask_available': FLASK_AVAILABLE,
         'requests_available': REQUESTS_AVAILABLE
     })
@@ -465,20 +497,32 @@ def extract_text():
     
     # Log OCR availability
     print(f"OCR Available: {OCR_AVAILABLE}")
+    print(f"OCR Type: {OCR_TYPE}")
     
     # Extract text from PDF
     success, text, message = extract_text_from_pdf_web(pdf_url, use_ocr=True)
     
     if success:
-        return jsonify({'text': text, 'message': message, 'ocr_available': OCR_AVAILABLE})
+        return jsonify({
+            'text': text, 
+            'message': message, 
+            'ocr_available': OCR_AVAILABLE,
+            'ocr_type': OCR_TYPE
+        })
     else:
-        return jsonify({'error': message, 'ocr_available': OCR_AVAILABLE}), 400
+        return jsonify({
+            'error': message, 
+            'ocr_available': OCR_AVAILABLE,
+            'ocr_type': OCR_TYPE
+        }), 400
 
 
 def main():
     """Main function to run the Flask web application locally."""
     print("Starting PDF Text Extractor Web Application...")
     print(f"OCR Available: {OCR_AVAILABLE}")
+    print(f"OCR Type: {OCR_TYPE}")
+    print(f"EasyOCR Available: {EASYOCR_AVAILABLE}")
     print(f"Flask Available: {FLASK_AVAILABLE}")
     print(f"Requests Available: {REQUESTS_AVAILABLE}")
     print("Open your browser and go to: http://localhost:5000")
