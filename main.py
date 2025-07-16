@@ -38,7 +38,17 @@ try:
     from PIL import Image
     import io
     import fitz  # PyMuPDF for image extraction
-    OCR_AVAILABLE = True
+    
+    # Test if tesseract is actually available on the system
+    try:
+        pytesseract.get_tesseract_version()
+        OCR_AVAILABLE = True
+        print("OCR (Tesseract) is available")
+    except Exception as e:
+        print(f"Warning: Tesseract not found on system: {e}")
+        print("OCR will be disabled. Install tesseract-ocr package on your system.")
+        OCR_AVAILABLE = False
+        
 except ImportError as e:
     print(f"Warning: OCR dependencies not available: {e}")
     print("Install with: pip install pytesseract pillow PyMuPDF")
@@ -171,6 +181,10 @@ def extract_text_from_image(image_data):
     Returns:
         str: Extracted text from the image
     """
+    if not OCR_AVAILABLE:
+        print("OCR not available - skipping image text extraction")
+        return ""
+        
     try:
         # Convert bytes to PIL Image
         image = Image.open(io.BytesIO(image_data))
@@ -188,6 +202,7 @@ def extract_text_from_image(image_data):
                 if text.strip() and len(text.strip()) > len(best_text):
                     best_text = text.strip()
             except Exception as e:
+                print(f"OCR failed with PSM {psm}: {e}")
                 continue
         
         text = best_text
@@ -429,6 +444,17 @@ def index():
     return render_template('index.html')
 
 
+@app.route('/health')
+def health():
+    """Health check endpoint to verify OCR status."""
+    return jsonify({
+        'status': 'healthy',
+        'ocr_available': OCR_AVAILABLE,
+        'flask_available': FLASK_AVAILABLE,
+        'requests_available': REQUESTS_AVAILABLE
+    })
+
+
 @app.route('/extract-text')
 def extract_text():
     """API endpoint to extract text from PDF."""
@@ -437,18 +463,24 @@ def extract_text():
     if not pdf_url:
         return jsonify({'error': 'No PDF URL provided'}), 400
     
+    # Log OCR availability
+    print(f"OCR Available: {OCR_AVAILABLE}")
+    
     # Extract text from PDF
     success, text, message = extract_text_from_pdf_web(pdf_url, use_ocr=True)
     
     if success:
-        return jsonify({'text': text, 'message': message})
+        return jsonify({'text': text, 'message': message, 'ocr_available': OCR_AVAILABLE})
     else:
-        return jsonify({'error': message}), 400
+        return jsonify({'error': message, 'ocr_available': OCR_AVAILABLE}), 400
 
 
 def main():
     """Main function to run the Flask web application locally."""
     print("Starting PDF Text Extractor Web Application...")
+    print(f"OCR Available: {OCR_AVAILABLE}")
+    print(f"Flask Available: {FLASK_AVAILABLE}")
+    print(f"Requests Available: {REQUESTS_AVAILABLE}")
     print("Open your browser and go to: http://localhost:5000")
     print("Press Ctrl+C to stop the server")
     
