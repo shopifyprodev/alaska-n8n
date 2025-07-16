@@ -447,12 +447,7 @@ def extract_text():
 
 
 def main():
-    """Main function to run the Flask web application."""
-    if not FLASK_AVAILABLE:
-        print("Error: Flask is required to run the web application.")
-        print("Install with: pip install flask")
-        return 1
-    
+    """Main function to run the Flask web application locally."""
     print("Starting PDF Text Extractor Web Application...")
     print("Open your browser and go to: http://localhost:5000")
     print("Press Ctrl+C to stop the server")

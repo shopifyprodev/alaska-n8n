@@ -1,7 +1,9 @@
 services:
   - type: web
-    name: alaska-n8n
+    name: alaska-n8n-new
     env: python
     plan: free
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "gunicorn main:app"  # main = filename (main.py), app = Flask/FastAPI app variable
+    region: singapore
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn main:app
+    rootDir: alaska-n8n
