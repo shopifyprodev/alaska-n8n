@@ -32,6 +32,10 @@ except ImportError as e:
     print("Install with: pip install requests")
     REQUESTS_AVAILABLE = False
 
+# Initialize OCR variables
+OCR_AVAILABLE = False
+OCR_TYPE = None
+
 # OCR imports
 try:
     import pytesseract
