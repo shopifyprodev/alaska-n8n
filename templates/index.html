@@ -102,6 +102,48 @@
             margin: 5px 0;
             font-size: 14px;
         }
+        .status-info {
+            margin-top: 10px;
+            margin-bottom: 20px;
+            font-size: 12px;
+            color: #6c757d;
+        }
+        .progress-container {
+            margin: 20px 0;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            border: 1px solid #dee2e6;
+            display: none;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background-color: #e9ecef;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #007bff, #0056b3);
+            width: 0%;
+            transition: width 0.3s ease;
+            border-radius: 10px;
+        }
+        .timer {
+            font-size: 16px;
+            font-weight: bold;
+            color: #007bff;
+            text-align: center;
+            margin: 10px 0;
+        }
+        .status-message {
+            font-size: 14px;
+            color: #495057;
+            text-align: center;
+            margin: 5px 0;
+        }
     </style>
 </head>
 <body>
@@ -111,6 +153,18 @@
         <div class="input-container">
             <input type="text" id="pdf-url" placeholder="Enter PDF URL or Google Drive link">
             <button id="submit-btn">Extract Text</button>
+        </div>
+        
+        <div class="status-info">
+            <div id="status-info"></div>
+        </div>
+        
+        <div class="progress-container" id="progress-container">
+            <div class="timer" id="timer">00:00</div>
+            <div class="status-message" id="status-message">Initializing...</div>
+            <div class="progress-bar">
+                <div class="progress-fill" id="progress-fill"></div>
+            </div>
         </div>
 
         <div class="result">
@@ -133,6 +187,79 @@
         const submitBtn = document.getElementById('submit-btn');
         const pdfUrlInput = document.getElementById('pdf-url');
         const resultText = document.getElementById('result-text');
+        const statusInfo = document.getElementById('status-info');
+        const progressContainer = document.getElementById('progress-container');
+        const timer = document.getElementById('timer');
+        const statusMessage = document.getElementById('status-message');
+        const progressFill = document.getElementById('progress-fill');
+        
+        let timerInterval;
+        let startTime;
+
+        // Load status information on page load
+        async function loadStatus() {
+            try {
+                const response = await fetch('/health');
+                const data = await response.json();
+                
+                let statusText = `OCR: ${data.ocr_available ? '✅ Available' : '❌ Not Available'}`;
+                if (data.ocr_available) {
+                    statusText += ` (${data.ocr_type})`;
+                }
+                statusText += ` | AI Timeout: ${data.ai_config?.timeout_seconds || 'N/A'}s`;
+                
+                statusInfo.innerHTML = statusText;
+            } catch (error) {
+                statusInfo.innerHTML = 'Status: Unable to load';
+            }
+        }
+
+        // Load status when page loads
+        loadStatus();
+
+        function startTimer() {
+            startTime = Date.now();
+            timerInterval = setInterval(updateTimer, 1000);
+            progressContainer.style.display = 'block';
+            progressFill.style.width = '0%';
+            statusMessage.textContent = 'Starting PDF processing...';
+        }
+
+        function updateTimer() {
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            const minutes = Math.floor(elapsed / 60);
+            const seconds = elapsed % 60;
+            timer.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            
+            // Update progress bar based on time (assume max 5 minutes)
+            const maxTime = 300; // 5 minutes
+            const progress = Math.min((elapsed / maxTime) * 100, 95); // Cap at 95% until complete
+            progressFill.style.width = progress + '%';
+            
+            // Update status messages based on time
+            if (elapsed < 30) {
+                statusMessage.textContent = 'Downloading and analyzing PDF...';
+            } else if (elapsed < 60) {
+                statusMessage.textContent = 'Extracting text from pages...';
+            } else if (elapsed < 120) {
+                statusMessage.textContent = 'Processing with AI cleaning...';
+            } else if (elapsed < 180) {
+                statusMessage.textContent = 'Cleaning text page by page...';
+            } else {
+                statusMessage.textContent = 'Almost done, finalizing results...';
+            }
+        }
+
+        function stopTimer() {
+            if (timerInterval) {
+                clearInterval(timerInterval);
+            }
+            progressFill.style.width = '100%';
+            statusMessage.textContent = 'Processing complete!';
+            setTimeout(() => {
+                progressContainer.style.display = 'none';
+            }, 2000);
+        }
 
         submitBtn.addEventListener('click', async () => {
             const pdfUrl = pdfUrlInput.value.trim();
@@ -145,21 +272,34 @@
             // Show loading state
             submitBtn.disabled = true;
             submitBtn.textContent = 'Extracting...';
-            resultText.innerHTML = '<span class="loading">Processing PDF... This may take a few moments.</span>';
+            resultText.innerHTML = '<span class="loading">Processing PDF... This may take a few moments for large files.</span>';
+            
+            // Start timer and progress
+            startTimer();
 
             try {
-                const response = await fetch(`/extract-text?pdf_url=${encodeURIComponent(pdfUrl)}`);
+                const url = `/extract-text?pdf_url=${encodeURIComponent(pdfUrl)}`;
+                const response = await fetch(url);
                 const data = await response.json();
                 
                 if (response.ok) {
-                    resultText.innerHTML = `<span class="success">✅ ${data.message}</span>\n\n${data.text}`;
+                    let resultHtml = `<span class="success">✅ ${data.message}</span>`;
+                    if (data.ai_cleaning_used !== undefined) {
+                        resultHtml += ` (AI cleaning: ${data.ai_cleaning_used ? '✅ Used' : '❌ Skipped'})`;
+                    }
+                    if (data.processing_info) {
+                        resultHtml += `\n📊 Processed ${data.processing_info.pages_processed} pages with ${data.processing_info.timeout_per_page}s timeout per page`;
+                    }
+                    resultHtml += `\n\n${data.text}`;
+                    resultText.innerHTML = resultHtml;
                 } else {
                     resultText.innerHTML = `<span class="error">❌ Error: ${data.error}</span>`;
                 }
             } catch (error) {
                 resultText.innerHTML = `<span class="error">❌ Network Error: ${error.message}</span>`;
             } finally {
-                // Reset button state
+                // Stop timer and reset button state
+                stopTimer();
                 submitBtn.disabled = false;
                 submitBtn.textContent = 'Extract Text';
             }

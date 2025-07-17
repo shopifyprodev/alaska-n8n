@@ -1,9 +1,0 @@
-services:
-  - type: web
-    name: alaska-n8n-new
-    env: python
-    plan: free
-    region: singapore
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn main:app
-    rootDir: alaska-n8n

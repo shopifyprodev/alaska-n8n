@@ -10,9 +10,12 @@ import os
 import argparse
 import re
 import tempfile
+import time
 from pathlib import Path
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+import google.generativeai as genai
 
 # Flask imports
 try:
@@ -76,8 +79,194 @@ if not OCR_AVAILABLE and EASYOCR_AVAILABLE:
 elif not OCR_AVAILABLE:
     print("No OCR available. Install tesseract-ocr or easyocr package.")
 
+
+# genai.configure(api_key="AIzaSyDqeJFw51iaX8Wht89HUO-ELq5Kcu9y8mQ")
+genai.configure(api_key="AIzaSyCU8TEdllSZyI_jytijYqfBgXIrCkDj2mk")
+model = genai.GenerativeModel("gemini-1.5-flash")
+executor = ThreadPoolExecutor(max_workers=2)
+
+# Configuration for AI processing
+AI_TIMEOUT = 30  # seconds
+MAX_TEXT_LENGTH = 50000  # characters per chunk
+AI_RETRY_ATTEMPTS = 3
+
 # Initialize Flask app
 app = Flask(__name__)
+
+
+def chunk_text(text, max_length=MAX_TEXT_LENGTH):
+    """
+    Split large text into smaller chunks for AI processing.
+    
+    Args:
+        text (str): Text to chunk
+        max_length (int): Maximum length per chunk
+    
+    Returns:
+        list: List of text chunks
+    """
+    if len(text) <= max_length:
+        return [text]
+    
+    chunks = []
+    current_chunk = ""
+    
+    # Split by pages first
+    pages = text.split("PAGE ")
+    
+    for i, page in enumerate(pages):
+        if i == 0:  # First part (before first PAGE)
+            if page.strip():
+                current_chunk += page
+        else:
+            page_text = "PAGE " + page
+            
+            if len(current_chunk + page_text) > max_length and current_chunk:
+                chunks.append(current_chunk.strip())
+                current_chunk = page_text
+            else:
+                current_chunk += page_text
+    
+    if current_chunk.strip():
+        chunks.append(current_chunk.strip())
+    
+    return chunks
+
+
+def get_page_count(text):
+    """Get the number of pages in the text."""
+    pages = text.split("PAGE ")
+    return len(pages) - 1 if len(pages) > 1 else 0
+
+def clean_text_page_by_page(text, timeout=AI_TIMEOUT):
+    """
+    Clean text page by page and save to temporary file.
+    
+    Args:
+        text (str): Text to clean
+        timeout (int): Timeout in seconds per page
+    
+    Returns:
+        str: Path to temporary file with cleaned text
+    """
+    def clean_single_page(page_text, page_num):
+        """Clean a single page of text."""
+        try:
+            rules = """
+            You are a document cleanup assistant. Process this single page with these rules:
+            
+            1. If the page has meaningful, legible text, preserve it exactly
+            2. If the page is mostly an image, map, or unreadable OCR, replace with "[ here is image ]"
+            3. Keep the page header format: "PAGE X of Y"
+            4. Return only the cleaned text for this page, no explanations
+            """
+
+            prompt = f"""
+            Clean this single page of PDF text according to the rules:
+            
+            {rules}
+            
+            Page to clean:
+            {page_text}
+            """
+
+            response = model.generate_content(prompt)
+            return response.text.strip()
+        except Exception as e:
+            print(f"AI cleaning failed for page {page_num}: {e}")
+            return page_text.strip()
+    
+    try:
+        # Create temporary file for cleaned text
+        temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8')
+        temp_path = temp_file.name
+        temp_file.close()
+        
+        # Split text into pages
+        pages = text.split("PAGE ")
+        cleaned_pages = []
+        
+        # Process header (text before first PAGE)
+        if pages[0].strip():
+            header_text = pages[0].strip()
+            print(f"Processing header...")
+            future = executor.submit(lambda: header_text)  # Keep header as-is
+            try:
+                result = future.result(timeout=timeout)
+                cleaned_pages.append(result)
+                print(f"✅ Header processed")
+            except FutureTimeoutError:
+                print(f"⚠️ Header processing timed out, keeping original")
+                cleaned_pages.append(header_text)
+        
+        # Get total page count for progress reporting
+        total_pages = len(pages) - 1 if len(pages) > 1 else 0
+        print(f"📄 Processing {total_pages} pages with {timeout}s timeout per page")
+        
+        # Process each page
+        for i, page in enumerate(pages[1:], 1):
+            page_text = "PAGE " + page
+            print(f"🔄 Processing page {i}/{total_pages}...")
+            
+            future = executor.submit(clean_single_page, page_text, i)
+            try:
+                result = future.result(timeout=timeout)
+                cleaned_pages.append(result)
+                print(f"✅ Page {i}/{total_pages} cleaned and added")
+            except FutureTimeoutError:
+                print(f"⚠️ Page {i}/{total_pages} processing timed out, keeping original")
+                cleaned_pages.append(page_text.strip())
+        
+        # Write all cleaned pages to temporary file
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            f.write('\n\n'.join(cleaned_pages))
+        
+        print(f"📄 All pages processed and saved to temporary file")
+        
+        # Show processing statistics
+        successful_pages = sum(1 for page in cleaned_pages if page.strip())
+        print(f"📊 Processing complete: {successful_pages}/{total_pages} pages successfully processed")
+        
+        return temp_path
+        
+    except Exception as e:
+        print(f"AI cleaning failed: {e}")
+        # Return original text as temporary file
+        temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8')
+        temp_path = temp_file.name
+        temp_file.write(text)
+        temp_file.close()
+        return temp_path
+
+
+def clean_text_with_retry(text, max_retries=AI_RETRY_ATTEMPTS):
+    """
+    Clean text with retry mechanism for reliability.
+    
+    Args:
+        text (str): Text to clean
+        max_retries (int): Maximum number of retry attempts
+    
+    Returns:
+        str: Path to temporary file with cleaned text
+    """
+    for attempt in range(max_retries):
+        try:
+            print(f"AI cleaning attempt {attempt + 1}/{max_retries}")
+            temp_file_path = clean_text_page_by_page(text)
+            return temp_file_path
+        except Exception as e:
+            print(f"Attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)  # Exponential backoff
+            else:
+                print("All AI cleaning attempts failed, returning original text as file")
+                # Create temporary file with original text
+                temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8')
+                temp_path = temp_file.name
+                temp_file.write(text)
+                temp_file.close()
+                return temp_path
 
 
 def is_google_drive_link(url):
@@ -156,14 +345,8 @@ def download_pdf_from_drive(drive_url, verbose=True):
             print(f"Error: Could not extract file ID from URL: {drive_url}")
             return None
         
-        if verbose:
-            print(f"Extracted file ID: {file_id}")
-        
         # Create direct download URL
         download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-        
-        if verbose:
-            print(f"Downloading from: {download_url}")
         
         # Download the file
         response = requests.get(download_url, stream=True)
@@ -179,9 +362,6 @@ def download_pdf_from_drive(drive_url, verbose=True):
                 temp_file.write(chunk)
         
         temp_file.close()
-        
-        if verbose:
-            print(f"Downloaded to temporary file: {temp_path}")
         
         return temp_path
         
@@ -312,8 +492,6 @@ def extract_text_from_pdf_web(pdf_source, use_ocr=True):
     try:
         # Check if it's a Google Drive link
         if is_google_drive_link(pdf_source):
-            print(f"Detected Google Drive link: {pdf_source}")
-            
             # Download the PDF from Google Drive
             temp_file_path = download_pdf_from_drive(pdf_source, verbose=False)
             if not temp_file_path:
@@ -331,26 +509,19 @@ def extract_text_from_pdf_web(pdf_source, use_ocr=True):
                 return False, "", f"PDF file '{pdf_path}' not found."
         
         # Read PDF
-        print(f"Reading PDF: {pdf_path}")
-        
         reader = PdfReader(pdf_path)
         total_pages = len(reader.pages)
-        
-        print(f"PDF has {total_pages} pages")
         
         # Extract text from all pages
         all_text = ""
         text_extracted = False
         
         for page_num, page in enumerate(reader.pages):
-            print(f"Processing page {page_num + 1}/{total_pages}...")
-            
             # Try to extract text normally first
             text = page.extract_text()
             
             # If no text found or very little text, try OCR on the entire page
             if (not text.strip() or len(text.strip()) < 100) and use_ocr and OCR_AVAILABLE:
-                print(f"  Limited text found, trying OCR for entire page {page_num + 1}...")
                 
                 # Convert the entire page to an image and apply OCR
                 try:
@@ -371,16 +542,11 @@ def extract_text_from_pdf_web(pdf_source, use_ocr=True):
                     
                     if ocr_result and len(ocr_result) > len(text.strip()):
                         text = ocr_result
-                        print(f"  OCR extracted text from entire page {page_num + 1}")
-                    else:
-                        print(f"  OCR did not find additional text on page {page_num + 1}")
                     
                     pix = None  # Free memory
                     doc.close()
                     
                 except Exception as e:
-                    print(f"    Warning: Could not process page {page_num + 1} with OCR: {e}")
-                    
                     # Fallback: try to extract individual images from the page
                     try:
                         doc = fitz.open(pdf_path)
@@ -401,15 +567,14 @@ def extract_text_from_pdf_web(pdf_source, use_ocr=True):
                                 
                                 pix = None
                             except Exception as e:
-                                print(f"    Warning: Could not process image {img_index}: {e}")
+                                pass
                         
                         doc.close()
                         
                         if ocr_text:
                             text = ocr_text
-                            print(f"  OCR extracted text from images on page {page_num + 1}")
                     except Exception as e:
-                        print(f"    Warning: Could not extract images from page {page_num + 1}: {e}")
+                        pass
             
             if text.strip():  # Only add non-empty pages
                 text_extracted = True
@@ -418,8 +583,7 @@ def extract_text_from_pdf_web(pdf_source, use_ocr=True):
                 all_text += f"{'='*50}\n\n"
                 all_text += text
                 all_text += "\n\n"
-            else:
-                print(f"  No text found on page {page_num + 1}")
+
         
         if not text_extracted:
             message = "No text was extracted from any page."
@@ -435,27 +599,6 @@ def extract_text_from_pdf_web(pdf_source, use_ocr=True):
         result_text += f"{'='*50}\n"
         result_text += all_text
         
-        # Save extracted text to a file for easier viewing
-        try:
-            output_dir = Path("text files")
-            output_dir.mkdir(exist_ok=True)
-            
-            # Create filename based on source
-            if is_google_drive_link(pdf_source):
-                file_id = extract_file_id_from_drive_link(pdf_source)
-                filename = f"drive_file_{file_id}_extracted_text.txt"
-            else:
-                source_name = Path(pdf_source).stem
-                filename = f"{source_name}_extracted_text.txt"
-            
-            output_path = output_dir / filename
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(result_text)
-            
-            print(f"Extracted text saved to: {output_path}")
-        except Exception as e:
-            print(f"Warning: Could not save extracted text to file: {e}")
-        
         return True, result_text, f"Successfully extracted text from {total_pages} pages"
         
     except PdfReadError as e:
@@ -467,9 +610,8 @@ def extract_text_from_pdf_web(pdf_source, use_ocr=True):
         if temp_file_path and os.path.exists(temp_file_path):
             try:
                 os.unlink(temp_file_path)
-                print(f"Cleaned up temporary file: {temp_file_path}")
             except Exception as e:
-                print(f"Warning: Could not delete temporary file {temp_file_path}: {e}")
+                pass
 
 
 @app.route('/')
@@ -487,32 +629,78 @@ def health():
         'ocr_type': OCR_TYPE,
         'easyocr_available': EASYOCR_AVAILABLE,
         'flask_available': FLASK_AVAILABLE,
-        'requests_available': REQUESTS_AVAILABLE
+        'requests_available': REQUESTS_AVAILABLE,
+        'ai_config': {
+            'timeout_seconds': AI_TIMEOUT,
+            'max_text_length': MAX_TEXT_LENGTH,
+            'retry_attempts': AI_RETRY_ATTEMPTS
+        }
     })
+
+
+def clean_text(text):
+    """Clean the extracted text with robust error handling and timeout management."""
+    print(f"Starting AI cleaning for text of length: {len(text)}")
+    temp_file_path = clean_text_with_retry(text)
+    
+    # Read the cleaned text from temporary file
+    try:
+        with open(temp_file_path, 'r', encoding='utf-8') as f:
+            cleaned_text = f.read()
+        
+        # Clean up temporary file
+        try:
+            os.unlink(temp_file_path)
+        except Exception as e:
+            print(f"Warning: Could not delete temporary file {temp_file_path}: {e}")
+        
+        return cleaned_text
+    except Exception as e:
+        print(f"Error reading cleaned text from file: {e}")
+        return text.strip()
 
 
 @app.route('/extract-text')
 def extract_text():
     """API endpoint to extract text from PDF."""
     pdf_url = request.args.get('pdf_url')
+    use_ai_cleaning = True  # Always enabled
     
     if not pdf_url:
         return jsonify({'error': 'No PDF URL provided'}), 400
     
-    # Log OCR availability
-    print(f"OCR Available: {OCR_AVAILABLE}")
-    print(f"OCR Type: {OCR_TYPE}")
+    print(f"Processing PDF: {pdf_url}")
+    print(f"AI cleaning enabled: {use_ai_cleaning}")
     
     # Extract text from PDF
     success, text, message = extract_text_from_pdf_web(pdf_url, use_ocr=True)
-    
+
     if success:
-        return jsonify({
-            'text': text, 
+        if use_ai_cleaning:
+            print("Starting AI cleaning process...")
+            page_count = get_page_count(text)
+            print(f"📊 Text contains {page_count} pages to process")
+            cleaned_text = clean_text(text)
+        else:
+            print("Skipping AI cleaning, returning raw text")
+            cleaned_text = text
+        
+        response_data = {
+            'text': cleaned_text, 
             'message': message, 
             'ocr_available': OCR_AVAILABLE,
-            'ocr_type': OCR_TYPE
-        })
+            'ocr_type': OCR_TYPE,
+            'ai_cleaning_used': use_ai_cleaning
+        }
+        
+        if use_ai_cleaning:
+            response_data['processing_info'] = {
+                'pages_processed': page_count,
+                'timeout_per_page': AI_TIMEOUT,
+                'method': 'page_by_page'
+            }
+        
+        return jsonify(response_data)
     else:
         return jsonify({
             'error': message, 
